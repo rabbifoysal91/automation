@@ -1,0 +1,199 @@
+Sub Received_Summary()
+    Dim OutlookApp As Object
+    Dim OutlookNamespace As Object
+    Dim ZMFolder As Object
+    Dim SubFolder As Object
+    Dim MailItem As Object
+    Dim SenderName As String
+    Dim ReceivedTime As String
+    Dim EmailSubject As String
+    Dim OutputRow As Long
+    Dim ws As Worksheet
+    Dim SpecificDate As Date
+    Dim FrontSheet As Worksheet
+    Dim FilteredItems As Object
+    Dim EmailFound As Boolean
+    Dim SelectedFolder As Object
+    Dim AllSenders As Collection
+    Dim CheckedSenders As Collection
+    Dim sheetExists As Boolean
+    Dim wsSupport As Worksheet
+    Dim wsSummary As Worksheet
+    
+    ' Initialize Outlook objects
+    Set OutlookApp = CreateObject("Outlook.Application")
+    Set OutlookNamespace = OutlookApp.GetNamespace("MAPI")
+    
+    ' Use PickFolder to manually select the ZM folder
+    Set SelectedFolder = OutlookNamespace.PickFolder
+
+    ' Check if a folder was selected
+    If Not SelectedFolder Is Nothing Then
+        MsgBox "You selected: " & SelectedFolder.Name & " under " & SelectedFolder.Parent.Name
+        Set ZMFolder = SelectedFolder
+    Else
+        MsgBox "No folder was selected."
+        Exit Sub
+    End If
+
+    ' Check if the "Support Sheet" exists and delete it if it does
+    sheetExists = False
+    For Each wsSupport In ThisWorkbook.Sheets
+        If wsSupport.Name = "Support Sheet" Then
+            sheetExists = True
+            Exit For
+        End If
+    Next wsSupport
+
+    If sheetExists Then
+        Application.DisplayAlerts = False
+        ThisWorkbook.Sheets("Support Sheet").Delete
+        Application.DisplayAlerts = True
+    End If
+
+    ' Create a new "Support Sheet"
+    Set wsSupport = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("counting"))
+    wsSupport.Name = "Support Sheet"
+
+    ' Set the front sheet to read the date from
+    On Error Resume Next
+    Set FrontSheet = ThisWorkbook.Sheets("switch") ' Reference the sheet named "switch"
+    On Error GoTo 0
+
+    ' Check if the sheet exists
+    If FrontSheet Is Nothing Then
+        MsgBox "Sheet named 'switch' not found."
+        Exit Sub
+    End If
+
+    ' Get the date from cell B1 in the front sheet
+    If IsDate(FrontSheet.Range("B1").value) Then
+        SpecificDate = FrontSheet.Range("B1").value
+    Else
+        MsgBox "Please enter a valid date in cell B1 of the front sheet."
+        Exit Sub
+    End If
+
+    ' Set the worksheet where the data will be output
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets("received summary")
+    On Error GoTo 0
+
+    ' If the sheet does not exist, create it
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Sheets.Add
+        ws.Name = "received summary"
+    End If
+
+    ' Clear any existing content in the sheet
+    ws.Cells.Clear
+
+    ' Add headers to the Excel sheet
+    ws.Cells(1, 1).value = "Sender Name"
+    ws.Cells(1, 2).value = "Received Time and Date"
+    ws.Cells(1, 3).value = "Folder Name"
+    ws.Cells(1, 4).value = "Subject Line"
+    ws.Cells(1, 6).value = "Not Provided Reports" ' Header for not sent email sender
+
+    OutputRow = 2 ' Start output from row 2 to leave row 1 for headers
+    NotSentRow = 2 ' Start output for not sent from row 2 to leave row 1 for headers
+
+    ' Initialize the collections to track senders
+    Set AllSenders = New Collection
+    Set CheckedSenders = New Collection
+
+    ' Collect all sender names
+    For Each SubFolder In ZMFolder.Folders
+        ' Assume the folder name is the sender's name
+        AllSenders.Add SubFolder.Name
+    Next SubFolder
+
+    ' Loop through each subfolder in the ZM folder
+    For Each SubFolder In ZMFolder.Folders
+        EmailFound = False ' Reset the flag for each subfolder
+
+        ' Filter and retrieve items based on the specific date
+        Set FilteredItems = SubFolder.Items.Restrict("[ReceivedTime] >= '" & Format(SpecificDate, "MM/dd/yyyy") & "' And [ReceivedTime] < '" & Format(SpecificDate + 1, "MM/dd/yyyy") & "'")
+
+        ' Loop through each filtered item in the current subfolder
+        For Each MailItem In FilteredItems
+            ' Check if the item is an email
+            If TypeName(MailItem) = "MailItem" Then
+                ' Get the subject of the email
+                EmailSubject = MailItem.Subject
+
+                ' Check if the subject line contains 'stock counting' or 'counting' and does not contain 'oil', 'surprise', 'void', 'need', or 'Explanation'
+                If (InStr(1, EmailSubject, "stock counting", vbTextCompare) > 0 Or _
+                    InStr(1, EmailSubject, "Schedule", vbTextCompare) > 0 Or _
+                    InStr(1, EmailSubject, "counting", vbTextCompare) > 0) And _
+                    InStr(1, EmailSubject, "oil", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "surprise", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "need", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "Explanation", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "void", vbTextCompare) = 0 Then
+
+                    ' Set the flag to true since an email meeting the criteria was found
+                    EmailFound = True
+
+                    ' Get sender name and received time
+                    SenderName = MailItem.SenderName
+                    ReceivedTime = MailItem.ReceivedTime
+
+                    ' Output the sender name, received time, folder name, and subject line to the Excel sheet
+                    ws.Cells(OutputRow, 1).value = SenderName
+                    ws.Cells(OutputRow, 2).value = ReceivedTime
+                    ws.Cells(OutputRow, 3).value = SubFolder.Name
+                    ws.Cells(OutputRow, 4).value = EmailSubject
+
+                    ' Add the sender to the CheckedSenders collection
+                    On Error Resume Next
+                    CheckedSenders.Add SenderName, CStr(SenderName)
+                    On Error GoTo 0
+
+                    ' Move to the next row for the next entry
+                    OutputRow = OutputRow + 1
+                End If
+            End If
+        Next MailItem
+
+        ' If no email met the criteria, output the sender name (from the folder name) to column F
+        If Not EmailFound Then
+            ws.Cells(NotSentRow, 6).value = SubFolder.Name
+            NotSentRow = NotSentRow + 1
+        End If
+    Next SubFolder
+
+    ' Highlight duplicates in Column A
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.count, 1).End(xlUp).Row ' Find the last row with data in Column A
+
+    If lastRow > 1 Then
+        With ws.Range("A2:A" & lastRow).FormatConditions.Add(Type:=xlExpression, Formula1:="=COUNTIF($A$2:$A$" & lastRow & ",A2)>1")
+            .Interior.Color = RGB(255, 255, 0) ' Yellow background for duplicates
+            .Font.Color = RGB(0, 0, 0) ' Black font color for visibility
+        End With
+    End If
+
+    ' Delete the "Summary" sheet if it exists
+    On Error Resume Next
+    Set wsSummary = ThisWorkbook.Sheets("Summary")
+    If Not wsSummary Is Nothing Then
+        Application.DisplayAlerts = False
+        wsSummary.Delete
+        Application.DisplayAlerts = True
+    End If
+    On Error GoTo 0
+
+    ' Clean up
+    Set MailItem = Nothing
+    Set SubFolder = Nothing
+    Set ZMFolder = Nothing
+    Set OutlookNamespace = Nothing
+    Set OutlookApp = Nothing
+
+    ' Notify the user
+    MsgBox "Stock Counting Reports from ZM subfolders have been listed, and those who did not provide reports are listed in column F."
+    Sheets("received Summary").Select
+End Sub
+
+
