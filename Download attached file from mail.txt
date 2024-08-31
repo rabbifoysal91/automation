@@ -1,0 +1,167 @@
+Sub Downloadd()
+    Dim OutlookApp As Object
+    Dim OutlookNamespace As Object
+    Dim ZMFolder As Object
+    Dim SubFolder As Object
+    Dim MailItem As Object
+    Dim Attachment As Object
+    Dim EmailSubject As String
+    Dim SpecificDate As Date
+    Dim switchSheet As Worksheet
+    Dim SelectedFolder As Object
+    Dim SavePath As String
+    Dim DownloadCount As Long
+    Dim FullFilePath As String
+    Dim FileSystem As Object
+    Dim LogFilePath As String
+    Dim LogFileNumber As Integer
+    Dim File As Object
+    Dim NoAttachments As Boolean
+    Dim FileExt As String
+    Dim SenderName As String
+    Dim filePath As String
+    
+    ' Initialize Outlook objects
+    Set OutlookApp = CreateObject("Outlook.Application")
+    Set OutlookNamespace = OutlookApp.GetNamespace("MAPI")
+
+    ' Use PickFolder to manually select the ZM folder
+    Set SelectedFolder = OutlookNamespace.PickFolder
+
+    ' Check if a folder was selected
+    If Not SelectedFolder Is Nothing Then
+        Set ZMFolder = SelectedFolder
+    Else
+        MsgBox "No folder was selected."
+        Exit Sub
+    End If
+
+    ' Set the switch sheet to read the date from
+    Set switchSheet = ThisWorkbook.Sheets("switch")
+
+    ' Get the date from cell B1 in the switch sheet
+    If IsDate(switchSheet.Range("B1").value) Then
+        SpecificDate = switchSheet.Range("B1").value
+    Else
+        MsgBox "Please enter a valid date in cell B1 of the switch sheet."
+        Exit Sub
+    End If
+
+    ' Set the save path for attachments
+    SavePath = "D:\ACI Logistics Limited\Daily Stock Counting\Attachment\"
+    LogFilePath = SavePath & "DownloadLog.txt"
+    
+    ' Initialize download counter
+    DownloadCount = 0
+    NoAttachments = True ' Assume no attachments at the start
+
+    ' Initialize FileSystem object
+    Set FileSystem = CreateObject("Scripting.FileSystemObject")
+
+    ' Create or open the log file
+    LogFileNumber = FreeFile
+    Open LogFilePath For Output As #LogFileNumber
+    
+    ' Write header to log file
+    Print #LogFileNumber, "Download Log - " & Now
+    
+    ' Delete all files in the folder, including .txt files
+    On Error Resume Next
+    For Each File In FileSystem.GetFolder(SavePath).Files
+        FileSystem.DeleteFile File.Path
+    Next File
+    On Error GoTo 0
+    
+    ' Loop through each subfolder in the ZM folder
+    For Each SubFolder In ZMFolder.Folders
+
+        ' Loop through each item in the current subfolder
+        For Each MailItem In SubFolder.Items
+            ' Check if the item is an email
+            If TypeName(MailItem) = "MailItem" Then
+                ' Get the subject of the email
+                EmailSubject = MailItem.Subject
+
+                ' Check if the subject line contains 'stock counting' or 'counting' and does not contain 'oil', 'surprise', 'Explanation', or 'void'
+                If (InStr(1, EmailSubject, "stock counting", vbTextCompare) > 0 Or _
+                    InStr(1, EmailSubject, "Schedule", vbTextCompare) > 0 Or _
+                    InStr(1, EmailSubject, "counting", vbTextCompare) > 0) And _
+                    InStr(1, EmailSubject, "oil", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "need", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "surprise", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "Explanation", vbTextCompare) = 0 And _
+                    InStr(1, EmailSubject, "void", vbTextCompare) = 0 Then
+
+                    ' Check if the received date matches the specific date
+                    If Int(MailItem.ReceivedTime) = SpecificDate Then
+                        SenderName = MailItem.SenderName
+                        NoAttachments = True ' Reset flag for each email
+
+                        ' Loop through and save attachments, ignoring PNG files
+                        For Each Attachment In MailItem.Attachments
+                            If Right(LCase(Attachment.fileName), 3) <> "png" Then
+                                ' Construct the new file name
+                                FullFilePath = SavePath & SenderName & " " & Attachment.fileName
+                                
+                                ' Check if the file already exists and rename if necessary
+                                If FileSystem.FileExists(FullFilePath) Then
+                                    FileExt = Mid(Attachment.fileName, InStrRev(Attachment.fileName, "."))
+                                    FullFilePath = SavePath & SenderName & " " & Left(Attachment.fileName, Len(Attachment.fileName) - Len(FileExt) - 1) & "_1" & FileExt
+                                    While FileSystem.FileExists(FullFilePath)
+                                        FullFilePath = SavePath & SenderName & " " & Left(Attachment.fileName, Len(Attachment.fileName) - Len(FileExt) - 1) & "_" & CStr(Val(Mid(FullFilePath, InStrRev(FullFilePath, "_") + 1))) + 1 & FileExt
+                                    Wend
+                                End If
+
+                                ' Log filename being saved
+                                Print #LogFileNumber, "Saving: " & FullFilePath
+                                
+                                ' Save attachment and check if it was saved successfully
+                                On Error Resume Next
+                                Attachment.SaveAsFile FullFilePath
+                                If Err.Number = 0 Then
+                                    DownloadCount = DownloadCount + 1
+                                    NoAttachments = False ' Found at least one attachment
+                                Else
+                                    Print #LogFileNumber, "Error saving file: " & FullFilePath & vbCrLf & "Error: " & Err.Description
+                                    Err.Clear
+                                End If
+                                On Error GoTo 0
+                            End If
+                        Next Attachment
+                        
+                        ' Show sender name if no attachments were found
+                        If NoAttachments Then
+                            MsgBox "No attachments found in email from: " & SenderName
+                        End If
+                    End If
+                End If
+            End If
+        Next MailItem
+    Next SubFolder
+
+    ' Close the log file
+    Close #LogFileNumber
+    
+    ' Delete any .txt files in the folder after downloading
+    On Error Resume Next
+    For Each File In FileSystem.GetFolder(SavePath).Files
+        If LCase(FileSystem.GetExtensionName(File)) = "txt" Then
+            FileSystem.DeleteFile File.Path
+        End If
+    Next File
+    On Error GoTo 0
+
+    ' Clean up
+    Set MailItem = Nothing
+    Set SubFolder = Nothing
+    Set ZMFolder = Nothing
+    Set OutlookNamespace = Nothing
+    Set OutlookApp = Nothing
+    Set FileSystem = Nothing
+
+    ' Notify the user with the count of downloaded files
+    MsgBox "Total number of attachments downloaded (excluding PNG files): " & DownloadCount
+    MsgBox "Check the log file at " & LogFilePath & " for details on saved files."
+End Sub
+
+
