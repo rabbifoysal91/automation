@@ -1,0 +1,182 @@
+Sub Compilee()
+    Dim wsDest As Worksheet
+    Dim wsSrc As Worksheet
+    Dim folderPath As String
+    Dim fileName As String
+    Dim lastRowDest As Long
+    Dim lastRowSrc As Long
+    Dim wbSrc As Workbook
+    Dim rngSrc As Range
+    Dim fileCount As Long
+    Dim startRowDest As Long
+    Dim i As Long
+    Dim searchValue As String
+    Dim switchSheet As Worksheet
+    Dim sheetFound As Boolean
+    Dim ws As Worksheet
+    Dim noSheetFiles As String ' Variable to store names of files without matching sheet
+
+    ' Set folder path
+    folderPath = "D:\ACI Logistics Limited\Daily Stock Counting\Attachment\"
+    
+    ' Check if the destination worksheet exists and delete if it does
+    On Error Resume Next
+    Set wsDest = ThisWorkbook.Sheets("counting")
+    If Not wsDest Is Nothing Then
+        Application.DisplayAlerts = False
+        wsDest.Delete
+        Application.DisplayAlerts = True
+    End If
+    On Error GoTo 0
+    
+    ' Create a new destination worksheet and move it to the first position
+    Set wsDest = ThisWorkbook.Sheets.Add(Before:=ThisWorkbook.Sheets(1))
+    wsDest.Name = "counting"
+    
+    ' Insert two new columns at the beginning (A and B)
+    wsDest.Columns("A:B").Insert Shift:=xlToRight
+    
+    ' Set the Switch sheet
+    Set switchSheet = ThisWorkbook.Sheets("switch") ' Changed sheet name to "switch"
+    
+    ' Get the search value from cell B8 in the Switch sheet
+    searchValue = CStr(switchSheet.Range("B8").value) ' Changed cell reference to B8
+    
+    ' Place headers in the counting sheet
+    With wsDest.Range("A1:S1")
+        .value = Array("File Name", "Sheet Name", "SL", "Date", "Site", "Outlet Name", "Category L3", "MC", "Article", "Article Description", "MRP", "EPS Qty", "BS QTY", "FS QTY", "Total Physical Qty", "Diff Qty", "Diff Value", "Zonal", "Remarks")
+        .Font.Bold = True
+        .Interior.Color = RGB(0, 112, 192) ' Dark blue background color
+        .Font.Color = RGB(255, 255, 255) ' White font color
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' Initialize file count and noSheetFiles string
+    fileCount = 0
+    noSheetFiles = ""
+    
+    ' Loop through all files in the folder
+    fileName = Dir(folderPath & "*.xlsx") ' Change to "*.xls" if files are in .xls format
+    
+    ' Initialize starting row for destination
+    startRowDest = 2
+    
+    Do While fileName <> ""
+        ' Open the source workbook
+        Set wbSrc = Workbooks.Open(folderPath & fileName)
+        
+        sheetFound = False
+        
+        ' Break all external links
+        Dim link As Variant
+        On Error Resume Next
+        For Each link In wbSrc.LinkSources(xlExcelLinks)
+            wbSrc.BreakLink Name:=link, Type:=xlExcelLinks
+        Next link
+        On Error GoTo 0
+        
+        ' Convert formulas to values in all sheets
+        Dim wsLink As Worksheet
+        For Each wsLink In wbSrc.Sheets
+            ' Remove filters if any
+            If wsLink.AutoFilterMode Then wsLink.AutoFilterMode = False
+            
+            ' Convert formulas to values
+            wsLink.UsedRange.value = wsLink.UsedRange.value
+        Next wsLink
+        
+        ' Loop through each sheet in the source workbook
+        For Each ws In wbSrc.Sheets
+            ' Check if the sheet name contains the search value
+            If InStr(1, ws.Name, searchValue, vbTextCompare) > 0 Then
+                ' If sheet is found, set wsSrc to this sheet
+                Set wsSrc = ws
+                sheetFound = True
+                Exit For
+            End If
+        Next ws
+        
+        If sheetFound Then
+            ' Unhide all rows in the source sheet
+            wsSrc.Rows.Hidden = False
+            
+            ' Find the last row in the source sheet starting from A2
+            lastRowSrc = wsSrc.Cells(wsSrc.Rows.count, 1).End(xlUp).Row
+            If lastRowSrc >= 2 Then
+                ' Set range to start from A2 and ignore the first row
+                Set rngSrc = wsSrc.Range("A2:Q" & lastRowSrc) ' Assuming data goes from column A to Q
+                
+                ' Find the last row in the destination sheet
+                lastRowDest = wsDest.Cells(wsDest.Rows.count, 1).End(xlUp).Row
+                If lastRowDest < 2 Then lastRowDest = 1
+                
+                ' Copy data from source sheet to destination sheet
+                rngSrc.Copy Destination:=wsDest.Cells(startRowDest, 3) ' Start from column C (3rd column)
+                
+                ' Populate Column A with the file name (before second space)
+                Dim fileNamePart As String
+                fileNamePart = Split(fileName, " ")(0) & " " & Split(fileName, " ")(1)
+                wsDest.Range("A" & startRowDest & ":A" & wsDest.Cells(wsDest.Rows.count, 3).End(xlUp).Row).value = fileNamePart
+                
+                ' Populate Column B with the sheet name
+                wsDest.Range("B" & startRowDest & ":B" & wsDest.Cells(wsDest.Rows.count, 3).End(xlUp).Row).value = ws.Name
+                
+                ' Increment the starting row for destination
+                startRowDest = wsDest.Cells(wsDest.Rows.count, 1).End(xlUp).Row + 1
+                
+                ' Increment the file count
+                fileCount = fileCount + 1
+            End If
+        Else
+            ' If no matching sheet is found, append truncated file name to noSheetFiles string
+            Dim truncatedFileName As String
+            truncatedFileName = Split(fileName, " ")(0) & " " & Split(fileName, " ")(1)
+            noSheetFiles = noSheetFiles & truncatedFileName & vbCrLf
+        End If
+        
+        ' Close the source workbook
+        wbSrc.Close SaveChanges:=False
+        
+        ' Move to the next file
+        fileName = Dir
+    Loop
+    
+    ' Now delete rows based on conditions
+    ' Find the last row in column E
+    lastRowDest = wsDest.Cells(wsDest.Rows.count, "E").End(xlUp).Row
+    
+    ' Loop from the last row to the second row (to avoid deleting the header row)
+    For i = lastRowDest To 2 Step -1
+        Dim cellValue As Variant
+        cellValue = wsDest.Cells(i, "E").value
+        
+        ' Convert cell value to string
+        If IsError(cellValue) Then
+            cellValue = ""
+        Else
+            cellValue = CStr(cellValue)
+        End If
+        
+        ' Check if the cell is blank or contains "Site"
+        If cellValue = "" Or InStr(1, cellValue, "Site", vbTextCompare) > 0 Then
+            wsDest.Rows(i).Delete
+        End If
+    Next i
+    
+    ' Add filters to the header row
+    wsDest.Range("A1:S1").AutoFilter
+    
+    ' Freeze the first row
+    wsDest.Rows("2:2").Select
+    wsDest.Application.ActiveWindow.FreezePanes = True
+    
+    ' Display a message box with the count of files compiled and the names of files without matching sheets
+    If Len(noSheetFiles) > 0 Then
+        MsgBox fileCount & " files have been compiled." & vbCrLf & vbCrLf & "Files without matching sheets:" & vbCrLf & noSheetFiles, vbInformation
+    Else
+        MsgBox fileCount & " files have been compiled.", vbInformation
+    End If
+End Sub
+
+
